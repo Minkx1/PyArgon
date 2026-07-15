@@ -31,4 +31,3 @@ pip install git+https://github.com/Minkx1/Argon.git
 ## Credits
 
 Made by *Minkx1* 
-11-7-2026
