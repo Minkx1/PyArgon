@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "argon"
+version = "0.0.1"
+description = "A python package that features easy interface for creating CLI-based applications and functions."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "Minkx1", email = "zakalata.mark@gmail.com" },
+]
+dependencies = []
+
+# Класифікатори тепер опціональні, але корисні для PyPI
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/Minkx1/Argon"
+
+[tool.setuptools.packages.find]
+where = ["."]
