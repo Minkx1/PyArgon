@@ -1,15 +1,18 @@
 import inspect
+import os
 import sys
 from collections.abc import Callable
 from typing import Any
+
+HELP_ALIASES = ("-h", "--help")
 
 
 class Flag:
     """Represents a command-line flag parameter.
 
     A flag is declared as a default value in a command function. This class
-    carries aliases, whether the flag accepts a value, and the expected type of
-    that value.
+    carries aliases, whether the flag accepts a value, the expected type of
+    that value, and an optional description used in per-command help.
     """
 
     def __init__(
@@ -18,6 +21,7 @@ class Flag:
         takes_value: bool = False,
         type: type | None = None,
         default: Any = None,
+        description: str | None = None,
     ) -> None:
         if not aliases:
             raise ValueError("Flag must have at least one alias")
@@ -26,6 +30,7 @@ class Flag:
         self.takes_value: bool = takes_value
         self.type: type = type if type is not None else str
         self.default: Any = default
+        self.description: str | None = description
         self.was_set: bool = False
         self.value: Any = default if takes_value else False
 
@@ -51,6 +56,7 @@ class Flag:
             takes_value=self.takes_value,
             type=self.type,
             default=self.default,
+            description=self.description,
         )
 
 
@@ -59,6 +65,7 @@ def flag(
     takes_value: bool = False,
     type: type | None = None,
     default: Any = None,
+    description: str | None = None,
 ) -> Flag:
     """Create a new command-line flag descriptor.
 
@@ -68,12 +75,19 @@ def flag(
             boolean switch.
         type: Value type for flags that take a value. Defaults to str.
         default: Default flag value when the option is not present.
+        description: Short text shown next to the flag in per-command help.
 
     Raises:
         ValueError: If no aliases are provided.
     """
 
-    return Flag(list(aliases), takes_value=takes_value, type=type, default=default)
+    return Flag(
+        list(aliases),
+        takes_value=takes_value,
+        type=type,
+        default=default,
+        description=description,
+    )
 
 
 class CliAppError(Exception): ...
@@ -127,12 +141,14 @@ class Command:
             takes_value = False
             flag_type = str
             flag_default = None
+            flag_description = None
 
             if is_flag:
                 flag_aliases = list(default.aliases)
                 takes_value = default.takes_value
                 flag_type = default.type
                 flag_default = default.default
+                flag_description = default.description
 
             param_type = Command._annotation_to_type(annotation)
             parameters[name] = {
@@ -145,6 +161,7 @@ class Command:
                 "is_flag": is_flag,
                 "flag_aliases": flag_aliases,
                 "takes_value": takes_value,
+                "flag_description": flag_description,
                 "type": flag_type if is_flag else param_type,
                 "default_value": flag_default if is_flag else default,
             }
@@ -159,7 +176,9 @@ class Command:
         """
         self.func = func
         self.name: str = func.__name__
-        self.docstring: str = str(func.__doc__)
+        # Keep the real docstring (or None) instead of stringifying it, so
+        # help formatting can tell "no docstring" apart from any other value.
+        self.docstring: str | None = func.__doc__
         self.signature = inspect.signature(func)
         self.args: dict = self.parse_func(func)
 
@@ -206,6 +225,7 @@ class Command:
                     takes_value=meta["takes_value"],
                     type=meta["type"],
                     default=meta["default_value"],
+                    description=meta["flag_description"],
                 )
             elif meta["kind"] == inspect.Parameter.VAR_POSITIONAL:
                 var_positional_name = name
@@ -356,6 +376,71 @@ class Command:
         except Exception as exc:
             raise CliAppError(f"Error occurred while executing command: {exc}") from exc
 
+    def usage_parts(self) -> tuple[list[str], list[dict]]:
+        """Build usage tokens for positional args and collect flag metadata.
+
+        Returns:
+            A tuple of (positional usage tokens, list of flag metadata dicts),
+            used by both the usage line and the options list in help text.
+        """
+        positional_tokens: list[str] = []
+        flags: list[dict] = []
+
+        for name, meta in self.args.items():
+            if meta["is_flag"]:
+                flags.append(meta)
+            elif meta["kind"] == inspect.Parameter.VAR_POSITIONAL:
+                positional_tokens.append(f"[{name}...]")
+            elif meta["kind"] == inspect.Parameter.VAR_KEYWORD:
+                continue
+            elif meta["has_default"]:
+                positional_tokens.append(f"[{name}]")
+            else:
+                positional_tokens.append(f"<{name}>")
+
+        return positional_tokens, flags
+
+    def help_str(self, display_name: str, aliases: list[str] | None = None) -> str:
+        """Build a detailed help page for this single command.
+
+        Args:
+            display_name: Name to show in the "Usage:" line (e.g. the
+                program name plus the invoked command name).
+            aliases: All registered names for this command, if any.
+        """
+        positional_tokens, flags = self.usage_parts()
+
+        usage = f"Usage: {display_name}"
+        if positional_tokens:
+            usage += " " + " ".join(positional_tokens)
+        if flags:
+            usage += " [options]"
+
+        lines = [usage, ""]
+        lines.append(
+            self.docstring.strip() if self.docstring else "No description available."
+        )
+
+        if aliases and len(aliases) > 1:
+            lines.append("")
+            lines.append(f"Aliases: {', '.join(aliases)}")
+
+        option_rows: list[tuple[str, str]] = []
+        for meta in flags:
+            alias_str = ", ".join(meta["flag_aliases"])
+            if meta["takes_value"]:
+                alias_str += f" <{meta['type'].__name__}>"
+            option_rows.append((alias_str, meta["flag_description"] or ""))
+        option_rows.append((", ".join(HELP_ALIASES), "Show this help message"))
+
+        width = max(len(row[0]) for row in option_rows) + 2
+        lines.append("")
+        lines.append("Options:")
+        for alias_str, desc in option_rows:
+            lines.append(f"  {alias_str:<{width}}{desc}".rstrip())
+
+        return "\n".join(lines)
+
 
 class CliApplication:
     def __init__(
@@ -366,9 +451,10 @@ class CliApplication:
         self.name = name
         self.description = description
         self.commands: dict[str, Command] = {}
-        self.command_names: dict[Command, list[str]] = {}
         self.command_count: int = 0
 
+        # Single source of truth for registration order and aliases; the
+        # `commands` dict above is just a name -> Command index built from it.
         self.commands_map: list[tuple[list[str], Command]] = []
 
     def command(self, names: list[str] | str = "") -> Callable:
@@ -380,39 +466,55 @@ class CliApplication:
 
         def decorator(func: Callable):
             cmd = Command(func)
-            if not names:
-                self.commands[func.__name__] = cmd
-                self.command_names[cmd] = [func.__name__]
+            registered_names = list(names) if names else [func.__name__]
 
-                self.commands_map.append(([func.__name__], cmd))
-            else:
-                for n in names:
-                    self.commands[n] = cmd
-                self.command_names[cmd] = list(names)
-                self.commands_map.append((list(names), cmd))
+            for n in registered_names:
+                self.commands[n] = cmd
+            self.commands_map.append((registered_names, cmd))
             self.command_count += 1
             return func
 
         return decorator
 
-    def run(self, args: list[str] = sys.argv[1:], set_default: str = "$only"):
-        """Runs CliApplication with given arguments(default: system arguments)
+    def _prog_name(self) -> str:
+        """Best-effort program name for usage lines."""
+        if sys.argv and sys.argv[0]:
+            return os.path.basename(sys.argv[0])
+        return self.name
+
+    def _aliases_for(self, command_name: str) -> list[str]:
+        """Return all registered aliases for the command matching a given name."""
+        for names, _ in self.commands_map:
+            if command_name in names:
+                return names
+        return [command_name]
+
+    def run(self, args: list[str] | None = None, set_default: str = "$only"):
+        """Runs CliApplication with given arguments (default: system arguments)
 
         Args:
             args(list[str]): List of command-line arguments after the command name.
             set_default(str, optional): Default command name or "$only" to use the only
                 registered command when exactly one command exists.
-
         """
+        if args is None:
+            args = sys.argv[1:]
+
         if len(args) == 0:
-            self.print_help()
+            self.help()
+            return
+
+        if args[0] in HELP_ALIASES:
+            self.help()
             return
 
         if args[0] in self.commands:
             command_name = args[0]
             command_args = args[1:]
         elif set_default == "$only" and self.command_count == 1:
-            command_name = next(iter(self.commands.keys()))
+            command_name = next(
+                iter(self.commands.keys())
+            )  # first name from the list of command's names
             command_args = args
         elif set_default != "$only" and set_default in self.commands:
             command_name = set_default
@@ -421,24 +523,73 @@ class CliApplication:
             command_name = args[0]
             command_args = args[1:]
 
-        if command_name in self.commands:
-            command_func = self.commands[command_name]
-            command_func(command_args)
+        if command_name not in self.commands:
+            print(f"Unknown command: {command_name}\n")
+            self.help()
+            return
+
+        if any(a in HELP_ALIASES for a in command_args):
+            self.print_command_help(command_name)
+            return
+
+        command_func = self.commands[command_name]
+        command_func(command_args)
+
+    def help_str(self) -> str:
+        """Build the top-level help text listing the app and its commands."""
+        prog = self._prog_name()
+        lines = [self.name, "", self.description, ""]
+        lines.append(f"Usage: {prog} <command> [args...] [options]")
+        lines.append("")
+        lines.append("Available commands:")
+
+        if not self.commands_map:
+            lines.append("  (no commands registered)")
         else:
-            print(f"Unknown command: {command_name}")
-            self.print_help()
+            rows: list[tuple[str, str]] = []
+            for command_names, command in self.commands_map:
+                aliases = ", ".join(n for n in command_names if n)
+                doc = (
+                    command.docstring.strip()
+                    if command.docstring
+                    else "No description available."
+                )
+                # Only show the first line of a multi-line docstring in the list.
+                doc = doc.splitlines()[0]
+                rows.append((aliases, doc))
 
-    def print_help(self):
-        print(f"{self.name}\n\n{self.description}")
-        print("Available commands:")
-        for command_names, command in self.commands_map:
-            doc = command.docstring
-            if doc == "None":  # No docstring
-                doc = "Usage unknown."
+            width = max(len(row[0]) for row in rows) + 2
+            for aliases, doc in rows:
+                lines.append(f"  {aliases:<{width}}{doc}")
 
-            aliases = ""
-            for name in command_names:
-                if name != "":
-                    aliases += name + ", "
-            aliases = aliases.removesuffix(", ")
-            print(f"  {aliases} : {doc}")
+        lines.append("")
+        lines.append(f"Run '{prog} <command> -h' for more information on a command.")
+        return "\n".join(lines)
+
+    def help(self) -> None:
+        """Print the top-level help text."""
+        print(self.help_str())
+
+    # Kept as an alias for backwards compatibility with earlier versions.
+    print_help = help
+
+    def command_help_str(self, command_name: str) -> str:
+        """Build the detailed help page for a single command.
+
+        Args:
+            command_name: Any registered alias of the command.
+
+        Raises:
+            CliAppError: If the command name is not registered.
+        """
+        if command_name not in self.commands:
+            raise CliAppError(f"Unknown command: {command_name}")
+
+        command = self.commands[command_name]
+        aliases = self._aliases_for(command_name)
+        display_name = f"{self._prog_name()} {command_name}"
+        return command.help_str(display_name, aliases=aliases)
+
+    def print_command_help(self, command_name: str) -> None:
+        """Print the detailed help page for a single command."""
+        print(self.command_help_str(command_name))
