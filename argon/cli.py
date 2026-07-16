@@ -19,18 +19,6 @@ class Flag:
         type: type | None = None,
         default: Any = None,
     ) -> None:
-        """Create a new command-line flag descriptor.
-
-        Args:
-            aliases: List of supported flag aliases, such as ["-t", "--time"].
-            takes_value: Whether the flag accepts a value instead of acting as a
-                boolean switch.
-            type: Value type for flags that take a value. Defaults to str.
-            default: Default flag value when the option is not present.
-
-        Raises:
-            ValueError: If no aliases are provided.
-        """
         if not aliases:
             raise ValueError("Flag must have at least one alias")
 
@@ -41,7 +29,7 @@ class Flag:
         self.was_set: bool = False
         self.value: Any = default if takes_value else False
 
-    def put(self, value: Any = True) -> None:
+    def set(self, value: Any = True) -> None:
         """Mark the flag as set and store its parsed value."""
         self.was_set = True
         self.value = value
@@ -64,6 +52,28 @@ class Flag:
             type=self.type,
             default=self.default,
         )
+
+
+def flag(
+    *aliases: str,
+    takes_value: bool = False,
+    type: type | None = None,
+    default: Any = None,
+) -> Flag:
+    """Create a new command-line flag descriptor.
+
+    Args:
+        aliases: List of supported flag aliases, such as ["-t", "--time"].
+        takes_value: Whether the flag accepts a value instead of acting as a
+            boolean switch.
+        type: Value type for flags that take a value. Defaults to str.
+        default: Default flag value when the option is not present.
+
+    Raises:
+        ValueError: If no aliases are provided.
+    """
+
+    return Flag(list(aliases), takes_value=takes_value, type=type, default=default)
 
 
 class CliAppError(Exception): ...
@@ -128,6 +138,7 @@ class Command:
             parameters[name] = {
                 "name": name,
                 "param": param,
+                "kind": param.kind,
                 "annotation": annotation,
                 "has_default": has_default,
                 "default": default,
@@ -183,6 +194,9 @@ class Command:
         alias_to_param: dict[str, str] = {}
         param_values: dict[str, Any] = {}
         positional_names: list[str] = []
+        var_positional_name: str | None = None
+        var_keyword_name: str | None = None
+        var_keyword_values: dict[str, Any] = {}
 
         for name, meta in self.args.items():
             if meta["is_flag"]:
@@ -193,12 +207,22 @@ class Command:
                     type=meta["type"],
                     default=meta["default_value"],
                 )
+            elif meta["kind"] == inspect.Parameter.VAR_POSITIONAL:
+                var_positional_name = name
+                param_values[name] = ()
+            elif meta["kind"] == inspect.Parameter.VAR_KEYWORD:
+                var_keyword_name = name
+                param_values[name] = {}
             elif meta["has_default"]:
                 param_values[name] = meta["default"]
             else:
                 param_values[name] = MISSING
 
-            if not meta["is_flag"]:
+            if not meta["is_flag"] and meta["kind"] not in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
                 positional_names.append(name)
 
         positional_tokens: list[str] = []
@@ -229,11 +253,11 @@ class Command:
                         if i >= len(args):
                             raise CliAppError(f"Missing value for option: {option}")
                         raw_value = args[i]
-                    option_flag.put(self._parse_value(meta["type"], raw_value))
+                    option_flag.set(self._parse_value(meta["type"], raw_value))
                 else:
                     if raw_value is not None:
                         raise CliAppError(f"Option {option} does not accept a value")
-                    option_flag.put(True)
+                    option_flag.set(True)
 
                 i += 1
                 continue
@@ -257,10 +281,10 @@ class Command:
                             if i >= len(args):
                                 raise CliAppError(f"Missing value for option: {alias}")
                             raw_value = args[i]
-                        option_flag.put(self._parse_value(meta["type"], raw_value))
+                        option_flag.set(self._parse_value(meta["type"], raw_value))
                         raw_short = ""
                         break
-                    option_flag.put(True)
+                    option_flag.set(True)
 
                 i += 1
                 continue
@@ -268,10 +292,17 @@ class Command:
             if "=" in token:
                 # Parse keyword-style values like name=value for non-flag parameters.
                 key, raw_value = token.split("=", 1)
-                if key not in self.args or self.args[key]["is_flag"]:
+                if key in self.args and not self.args[key]["is_flag"]:
+                    meta = self.args[key]
+                    if meta["kind"] == inspect.Parameter.VAR_POSITIONAL:
+                        raise CliAppError(
+                            f"Cannot assign value to variadic positional parameter: {key}"
+                        )
+                    param_values[key] = self._parse_value(meta["type"], raw_value)
+                elif var_keyword_name is not None:
+                    var_keyword_values[key] = raw_value
+                else:
                     raise CliAppError(f"Unknown keyword argument: {key}")
-                meta = self.args[key]
-                param_values[key] = self._parse_value(meta["type"], raw_value)
                 i += 1
                 continue
 
@@ -290,13 +321,36 @@ class Command:
             )
             positional_index += 1
 
-        if positional_index < len(positional_tokens):
+        remaining_positionals = positional_tokens[positional_index:]
+        if var_positional_name is not None:
+            var_meta = self.args[var_positional_name]
+            element_type = Command._annotation_to_type(var_meta["annotation"])
+            param_values[var_positional_name] = tuple(
+                self._parse_value(element_type, token)
+                for token in remaining_positionals
+            )
+        elif remaining_positionals:
             raise CliAppError(
-                f"Unexpected positional arguments: {positional_tokens[positional_index:]}"
+                f"Unexpected positional arguments: {remaining_positionals}"
             )
 
+        if var_keyword_name is not None:
+            param_values[var_keyword_name] = var_keyword_values
+
+        positional_args: list[Any] = []
+        keyword_args: dict[str, Any] = {}
+        for name, meta in self.args.items():
+            if meta["kind"] == inspect.Parameter.VAR_POSITIONAL:
+                positional_args.extend(param_values[name])
+            elif meta["kind"] == inspect.Parameter.VAR_KEYWORD:
+                keyword_args.update(param_values[name])
+            elif meta["kind"] == inspect.Parameter.POSITIONAL_ONLY:
+                positional_args.append(param_values[name])
+            else:
+                keyword_args[name] = param_values[name]
+
         try:
-            self.func(**param_values)
+            self.func(*positional_args, **keyword_args)
         except CliAppError:
             raise
         except Exception as exc:
@@ -308,33 +362,64 @@ class CliApplication:
         self,
         name: str = "CLI Application",
         description: str = "A simple CLI application",
-        one_command: Callable | None = None,
     ):
         self.name = name
         self.description = description
         self.commands: dict[str, Command] = {}
+        self.command_names: dict[Command, list[str]] = {}
+        self.command_count: int = 0
 
-        self.one_command: Callable | None = one_command
-        if one_command:
-            self.commands["main"] = Command(one_command)
+        self.commands_map: list[tuple[list[str], Command]] = []
 
-    def command(self, func: Callable) -> Callable:
-        """Decorator to register a function as a command."""
+    def command(self, names: list[str] | str = "") -> Callable:
+        """Decorator to register a function as a command.
 
-        self.commands[func.__name__] = Command(func)
-        return func
+        Args:
+            names(list[str]|str): the name(s) of the function, that can be called in the arguments.
+        """
 
-    def run(self, args: list[str] = sys.argv[1:]):
+        def decorator(func: Callable):
+            cmd = Command(func)
+            if not names:
+                self.commands[func.__name__] = cmd
+                self.command_names[cmd] = [func.__name__]
+
+                self.commands_map.append(([func.__name__], cmd))
+            else:
+                for n in names:
+                    self.commands[n] = cmd
+                self.command_names[cmd] = list(names)
+                self.commands_map.append((list(names), cmd))
+            self.command_count += 1
+            return func
+
+        return decorator
+
+    def run(self, args: list[str] = sys.argv[1:], set_default: str = "$only"):
+        """Runs CliApplication with given arguments(default: system arguments)
+
+        Args:
+            args(list[str]): List of command-line arguments after the command name.
+            set_default(str, optional): Default command name or "$only" to use the only
+                registered command when exactly one command exists.
+
+        """
         if len(args) == 0:
             self.print_help()
             return
 
-        if not getattr(self, "one_command", None):
+        if args[0] in self.commands:
             command_name = args[0]
             command_args = args[1:]
-        else:
-            command_name = "main"
+        elif set_default == "$only" and self.command_count == 1:
+            command_name = next(iter(self.commands.keys()))
             command_args = args
+        elif set_default != "$only" and set_default in self.commands:
+            command_name = set_default
+            command_args = args
+        else:
+            command_name = args[0]
+            command_args = args[1:]
 
         if command_name in self.commands:
             command_func = self.commands[command_name]
@@ -346,9 +431,14 @@ class CliApplication:
     def print_help(self):
         print(f"{self.name}\n\n{self.description}")
         print("Available commands:")
-        for command_name, command in self.commands.items():
+        for command_names, command in self.commands_map:
             doc = command.docstring
-            if not doc:
-                doc = "Unknown."
+            if doc == "None":  # No docstring
+                doc = "Usage unknown."
 
-            print(f"  {command_name}: {doc}")
+            aliases = ""
+            for name in command_names:
+                if name != "":
+                    aliases += name + ", "
+            aliases = aliases.removesuffix(", ")
+            print(f"  {aliases} : {doc}")

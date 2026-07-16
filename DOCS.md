@@ -37,11 +37,17 @@ pip install git+https://github.com/Minkx1/Argon.git
 
 Create a `CliApplication`, register commands with `@app.command`, and call `app.run(sys.argv[1:])` in `__main__`.
 
+`CliApplication.run` also supports a `set_default` value:
+
+- `set_default="$only"` (the default) uses the only registered command when exactly one command exists.
+- `set_default="command_name"` forces a specific default command when the first argument is not a recognized command.
+
 ## Commands
 
 A command is any Python function registered with `@app.command`.
 
-- The function name becomes the command name.
+- The function name becomes the command name when no explicit names are provided.
+- `@app.command(names=["main", "print"])` can expose multiple aliases for the same command.
 - Positional function parameters are populated from CLI positional arguments.
 - Parameters with default values are optional.
 - A `Flag` default marks the parameter as a command-line option.
@@ -84,7 +90,9 @@ Argon supports the following CLI forms:
 - Long flags with value: `--path=foo` or `--path foo`
 - Short flag groups: `-cv` for boolean flags
 - Keyword-style parameters for normal args: `name=value`
-- Separator `--` to stop option parsing and treat remaining tokens as positional arguments
+- Variadic args: allow `*args` in command functions to collect remaining positionals
+- Keyword kwargs: allow `**kwargs` in command functions to collect unknown `name=value` pairs
+- Separator `--` stops option parsing and treats remaining tokens as positional arguments
 
 ## Examples
 
@@ -138,5 +146,3 @@ Argon raises `CliAppError` for CLI parsing failures, including:
 - `argon/cli.py`: CLI parser implementation
 - `argon/__init__.py`: package exports
 - `main.py`: example entry point
-- `setup.py`: package installation metadata
-- `test_cli.py`: pytest coverage for CLI behavior

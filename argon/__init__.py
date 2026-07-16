@@ -1,1 +1,1 @@
-from .cli import CliAppError, CliApplication, Command, Flag
+from .cli import CliAppError, CliApplication, Flag, flag
