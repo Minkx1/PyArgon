@@ -17,20 +17,20 @@
 
 ## Introduction
 
-Argon is a small Python library for building command-line applications with decorator-based command registration. It keeps CLI code simple by exposing Python functions as commands and supporting flags through the `Flag` helper.
+PyArgon is a small Python library for building command-line applications with decorator-based command registration. It keeps CLI code simple by exposing Python functions as commands and supporting flags through the `Flag` helper.
 
 ## Installation
 
 Install the package from PyPI or directly from GitHub:
 
 ```bash
-pip install argon
+pip install pyargon
 ```
 
 or:
 
 ```bash
-pip install git+https://github.com/Minkx1/Argon.git
+pip install git+https://github.com/Minkx1/PyArgon.git
 ```
 
 ## Quick Start
@@ -64,7 +64,7 @@ A command is any Python function registered with `@app.command`.
 Example:
 
 ```python
-from argon import CliApplication, Flag
+from pyargon import CliApplication, Flag, flag
 
 app = CliApplication()
 
@@ -73,7 +73,7 @@ app = CliApplication()
 def sum(
     first_num: int | float,
     second_num: int | float = 1,
-    print_time: Flag = Flag(["-t", "--time"]),
+    print_time: Flag = flag("-t", "--time"),
 ) -> None:
     message = f"Result of sum: {first_num + second_num}"
     if print_time:
@@ -83,7 +83,7 @@ def sum(
 
 ## Argument Parsing
 
-Argon supports the following CLI forms:
+PyArgon supports the following CLI forms:
 
 - Positional args: `command 1 2`
 - Long flags: `--time`
@@ -107,7 +107,7 @@ python main.py sum 1 2 --time
 
 ```python
 @app.command
-def upload(path: Flag = Flag(["-p", "--path"], takes_value=True, type=str)) -> None:
+def upload(path: Flag = flag("-p", "--path", takes_value=True, type=str)) -> None:
     print(path.value)
 ```
 
@@ -133,7 +133,7 @@ python main.py status -cv
 
 ## Error Handling
 
-Argon raises `CliAppError` for CLI parsing failures, including:
+PyArgon raises `CliAppError` for CLI parsing failures, including:
 
 - unknown option aliases
 - missing option values
@@ -143,6 +143,6 @@ Argon raises `CliAppError` for CLI parsing failures, including:
 
 ## Project Structure
 
-- `argon/cli.py`: CLI parser implementation
-- `argon/__init__.py`: package exports
+- `pyargon/cli.py`: CLI parser implementation
+- `pyargon/__init__.py`: package exports
 - `main.py`: example entry point

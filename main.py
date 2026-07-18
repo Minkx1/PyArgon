@@ -1,6 +1,6 @@
 import sys
 
-from argon import CliApplication, Flag, flag
+from pyargon import CliApplication, Flag, flag
 
 app = CliApplication()
 
